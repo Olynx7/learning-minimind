@@ -1,0 +1,54 @@
+[project]
+name = "learning-minimind"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=2.3.5",
+    "pandas>=2.3.3",
+    "torch>=2.6.0",
+    "transformers>=4.57.3",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+    { index = "pytorch-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.format]
+quote-style = 'single'
+indent-style = "tab"
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = [
+    # pycodestyle rules
+    "E",
+    # pyflakes rules
+    "F",
+    # pyupgrader rules
+    "UP",
+    # flake8-bugbear rules
+    "B",
+    # flake8-simplify rules
+    "SIM",
+    # isort rules
+    "I",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.9",
+]
