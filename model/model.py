@@ -4,6 +4,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from transformers import PretrainedConfig
+from transformers.activations import ACT2FN
 
 
 class MiniMindConfig(PretrainedConfig):
@@ -39,7 +40,7 @@ class MiniMindConfig(PretrainedConfig):
 		seq_aux: bool = True,
 		norm_topk_prob: bool = True,
 		**kwargs,
-	):
+	) -> None:
 		super().__init__(**kwargs)
 		self.dropout = dropout
 		self.bos_token_id = bos_token_id
@@ -84,22 +85,22 @@ class MiniMindConfig(PretrainedConfig):
 
 
 class RMSNorm(torch.nn.Module):
-	def __init__(self, dim: int, eps: float = 1e-5):
+	def __init__(self, dim: int, eps: float = 1e-5) -> None:
 		super().__init__()
 		self.eps = eps
 		self.dim = dim
 		self.weight = torch.nn.Parameter(torch.ones(dim))
 
-	def _norm(self, x: torch.Tensor):
+	def _norm(self, x: torch.Tensor) -> torch.Tensor:
 		return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
-	def forward(self, x: torch.Tensor):
+	def forward(self, x: torch.Tensor) -> torch.Tensor:
 		return self.weight * self._norm(x.float()).type_as(x)
 
 
 def precompute_freqs_cis(
 	dim: int, end: int = int(32 * 1024), rope_base: float = 1e6, rope_scaling: dict | None = None
-):
+) -> tuple[torch.Tensor, torch.Tensor]:
 	freqs = 1.0 / (rope_base ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
 	attn_factor = 1.0
 	if rope_scaling is not None:
@@ -132,8 +133,10 @@ def precompute_freqs_cis(
 	return freqs_cos, freqs_sin
 
 
-def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
-	def rotate_half(x):
+def apply_rotary_pos_emb(
+	q, k, cos, sin, position_ids=None, unsqueeze_dim=1
+) -> tuple[torch.Tensor, torch.Tensor]:
+	def rotate_half(x) -> torch.Tensor:
 		return torch.cat((-x[..., x.shape[-1] // 2 :], x[..., : x.shape[-1] // 2]), dim=-1)
 
 	q_embed = (q * cos.unsqueeze(unsqueeze_dim)) + (rotate_half(q) * sin.unsqueeze(unsqueeze_dim))
@@ -142,8 +145,8 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
 
 
 def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
-	assert n_rep > 0, f"n_rep must be a positive integer, but got {n_rep}"
-	assert len(x.shape) == 4, f"x must be a 4-D tensor, but got {x.shape}"
+	assert n_rep > 0, f'n_rep must be a positive integer, but got {n_rep}'
+	assert len(x.shape) == 4, f'x must be a 4-D tensor, but got {x.shape}'
 	batch_size, seq_len, num_head, head_dim = x.shape
 	if n_rep == 1:
 		return x
@@ -155,33 +158,37 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
 
 
 class Attention(nn.Module):
-	def __init__(self, args: MiniMindConfig):
+	def __init__(self, config: MiniMindConfig) -> None:
 		super().__init__()
-		self.num_key_value_heads = args.num_attention_heads \
-			if args.num_key_value_heads is None else args.num_key_value_heads
-		assert args.num_attention_heads % args.num_key_value_heads == 0, \
-			f"num_attention_heads must be divisible by num_key_value_heads, " \
-			f"but got {args.num_attention_heads} and {args.num_key_value_heads}"
-		self.n_local_heads = args.num_attention_heads
-		self.n_local_kv_heads = args.num_key_value_heads
+		self.num_key_value_heads = (
+			config.num_attention_heads
+			if config.num_key_value_heads is None
+			else config.num_key_value_heads
+		)
+		assert config.num_attention_heads % config.num_key_value_heads == 0, (
+			f'num_attention_heads must be divisible by num_key_value_heads, '
+			f'but got {config.num_attention_heads} and {config.num_key_value_heads}'
+		)
+		self.n_local_heads = config.num_attention_heads
+		self.n_local_kv_heads = config.num_key_value_heads
 		self.n_rep = self.n_local_heads // self.n_local_kv_heads
-		self.head_dim = args.hidden_size // args.num_attention_heads
+		self.head_dim = config.hidden_size // config.num_attention_heads
 		self.q_proj = nn.Linear(
-			args.hidden_size, args.num_attention_heads * self.head_dim, bias=False
+			config.hidden_size, config.num_attention_heads * self.head_dim, bias=False
 		)
 		self.k_proj = nn.Linear(
-			args.hidden_size, args.num_key_value_heads * self.head_dim, bias=False
+			config.hidden_size, config.num_key_value_heads * self.head_dim, bias=False
 		)
 		self.v_proj = nn.Linear(
-			args.hidden_size, args.num_key_value_heads * self.head_dim, bias=False
+			config.hidden_size, config.num_key_value_heads * self.head_dim, bias=False
 		)
 		self.o_proj = nn.Linear(
-			args.num_attention_heads * self.head_dim, args.hidden_size, bias=False
+			config.num_attention_heads * self.head_dim, config.hidden_size, bias=False
 		)
-		self.attn_dropout = nn.Dropout(args.dropout)
-		self.resid_dropout = nn.Dropout(args.dropout)
-		self.dropout = args.dropout
-		self.flash = hasattr(nn.functional, 'scaled_dot_product_attention') and args.flash_attn
+		self.attn_dropout = nn.Dropout(config.dropout)
+		self.resid_dropout = nn.Dropout(config.dropout)
+		self.dropout = config.dropout
+		self.flash = hasattr(nn.functional, 'scaled_dot_product_attention') and config.flash_attn
 
 		def forward(
 			self,
@@ -201,9 +208,7 @@ class Attention(nn.Module):
 
 			# 计算位置编码
 			cos, sin = position_embeddings
-			xq, xk = apply_rotary_pos_emb(
-				xq, xk, cos=cos[:seq_len], sin=sin[:seq_len]
-			)
+			xq, xk = apply_rotary_pos_emb(xq, xk, cos=cos[:seq_len], sin=sin[:seq_len])
 
 			# 如果有缓存的 k, v，则进行拼接
 			if past_key_value is not None:
@@ -219,8 +224,11 @@ class Attention(nn.Module):
 			)
 
 			# 计算注意力
-			if self.flash and seq_len > 1 and \
-				(attention_mask is None or torch.all(attention_mask==1)):
+			if (
+				self.flash
+				and seq_len > 1
+				and (attention_mask is None or torch.all(attention_mask == 1))
+			):
 				# 使用 Flash Attention
 				out = F.scaled_dot_product_attention(
 					xq, xk, xv, dropout_p=self.dropout if self.training else 0.0, is_causal=True
@@ -238,11 +246,11 @@ class Attention(nn.Module):
 					extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
 					extended_attention_mask = (1.0 - extended_attention_mask) * -1e9
 					scores = scores + extended_attention_mask
-				
+
 				scores = F.softmax(scores.float(), dim=-1).type_as(xq)
 				scores = self.attn_dropout(scores)
 				out = scores @ xv
-			
+
 			out = out.transpose(1, 2).reshape(batch_size, seq_len, -1)
 			out = self.o_proj(out)
 			out = self.resid_dropout(out)
@@ -250,3 +258,21 @@ class Attention(nn.Module):
 			return out, past_kv
 
 
+class FeedForward(nn.Module):
+	def __init__(self, config: MiniMindConfig) -> None:
+		super().__init__()
+		if config.intermediate_size is None:
+			intermediate_size = int(config.hidden_size * 8 / 3)
+			config.intermediate_size = 64 * ((intermediate_size + 64 - 1) // 64)
+		self.gate_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+		self.up_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+		self.down_proj = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
+		self.dropout = nn.Dropout(config.dropout)
+		self.act_fn = ACT2FN[config.hidden_act]
+
+	def forward(self, x: torch.Tensor) -> torch.Tensor:
+		gate_out = self.gate_proj(x)
+		up_out = self.up_proj(x)
+		hidden_states = self.act_fn(gate_out) * up_out
+		out = self.dropout(self.down_proj(hidden_states))
+		return out
