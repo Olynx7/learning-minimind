@@ -276,3 +276,72 @@ class FeedForward(nn.Module):
 		hidden_states = self.act_fn(gate_out) * up_out
 		out = self.dropout(self.down_proj(hidden_states))
 		return out
+
+
+class MoEGate(nn.Module):
+	def __init__(self, config: MiniMindConfig) -> None:
+		super().__init__()
+		self.config = config
+
+		self.num_experts_per_tok = config.num_experts_per_tok  # 每个token选择的专家数量
+		self.n_routed_experts = config.n_routed_experts  # 总的专家数量
+		self.n_shared_experts = config.n_shared_experts  # 共享专家
+		self.scoring_func = config.scoring_func  # 评分函数，默认为'softmax'
+		self.aux_loss_alpha = config.aux_loss_alpha  # 辅助损失的alpha参数
+		self.seq_aux = config.seq_aux  # 是否在序列级别上计算辅助损失
+		self.norm_topk_prob = config.norm_topk_prob  # 是否标准化top-k概率
+
+		self.weight = nn.Parameter(torch.empty(self.n_routed_experts, config.hidden_size))
+		self.reset_parameters()
+
+	def reset_parameters(self) -> None:
+		nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+
+	def forward(self, hidden_states: torch.Tensor):
+		batch_size, seq_len, hidden_size = hidden_states.shape
+		hidden_states = hidden_states.view(-1, hidden_size)  # (B*S, H)
+		logits = F.linear(hidden_states, self.weight, None)  # (B*S, n_routed_experts)
+		if self.scoring_func == 'softmax':
+			scores = F.softmax(logits, dim=-1)
+		else:
+			raise NotImplementedError(f'Insupported scoring function: {self.scoring_func}')
+
+		topk_weights, topk_indices = torch.topk(
+			scores, k=self.num_experts_per_tok, dim=-1, sorted=False
+		)
+
+		if self.num_experts_per_tok > 1 and self.norm_topk_prob:
+			denominator = topk_weights.sum(dim=-1, keepdim=True) + 1e-20
+			topk_weights = topk_weights / denominator
+
+		# 防止专家坍缩，使用两种把不同的负载均衡方法
+		if self.training and self.aux_loss_alpha > 0.0:
+			scores_for_aux = scores
+			topk_for_aux = self.num_experts_per_tok
+			topk_indices_for_aux_loss = topk_indices.view(batch_size, -1)
+			if self.seq_aux:
+				# 计算序列级别的辅助损失
+				scores_for_seq_aux = scores_for_aux.view(batch_size, seq_len, -1)
+				capacity_estimate = torch.zeros(
+					batch_size, self.n_routed_experts, device=hidden_states.device
+				)
+				capacity_estimate.scatter_add_(
+					1,
+					topk_indices_for_aux_loss,
+					torch.ones(batch_size, seq_len * topk_for_aux, device=hidden_states.device),
+				).div_(seq_len * topk_for_aux / self.n_routed_experts)
+				aux_loss = (capacity_estimate * scores_for_seq_aux.mean(dim=1)).sum(
+					1
+				).mean() * self.aux_loss_alpha
+			else:
+				# 计算token级别的辅助损失
+				mask_capacity_estimate = F.one_hot(
+					topk_indices_for_aux_loss.view(-1), num_classes=self.n_routed_experts
+				)
+				capacity_estimate = mask_capacity_estimate.float().mean(0)
+				Pi = scores_for_aux.mean(0)
+				fi = capacity_estimate * self.n_routed_experts
+				aux_loss = (Pi * fi).sum() * self.aux_loss_alpha
+		else:
+			aux_loss = 0
+		return topk_indices, topk_weights, aux_loss
