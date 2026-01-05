@@ -386,7 +386,7 @@ class MoeFeedForward(nn.Module):
 				)  # (B*S, H)
 				y = y.view(*origin_shape)  # (B, S, H)
 			else:
-				pass
+				y = self.moe_infer(x, flat_topk_indices, topk_weights.view(-1)).view(*origin_shape)
 
 			if self.config.n_shared_experts > 0:
 				for expert in self.shared_experts:
@@ -409,7 +409,7 @@ class MoeFeedForward(nn.Module):
 			# tokens_per_expert.shape[0]即为专家数量（此时为4）
 			# 且token_idxs = [3, 7, 19, 21, 24, 25,  4,  5,  6, 10, 11, 12...] 时
 			# 意味token_idxs[:6] -> [3, 7, 19, 21, 24, 25]这6个位置属于专家0处理的token
-			#（每个token有可能被多个专家处理，这取决于num_experts_per_tok）
+			# （每个token有可能被多个专家处理，这取决于num_experts_per_tok）
 			# 接下来9个位置token_idxs[6:15] -> [4,  5,  6, 10, 11, 12...]属于专家1处理的token...
 			# 依此类推
 			for i, end_idx in enumerate(tokens_per_expert):
@@ -426,3 +426,41 @@ class MoeFeedForward(nn.Module):
 				)
 
 			return expert_cache
+
+
+class MiniMindBlock(nn.Module):
+	def __init__(self, layer_id: int, config: MiniMindConfig) -> None:
+		super().__init__()
+		self.num_attention_heads = config.num_attention_heads
+		self.hidden_size = config.hidden_size
+		self.head_dim = config.hidden_size // config.num_attention_heads
+		self.attn = Attention(config)
+
+		self.layer_id = layer_id
+		self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+		self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+		self.mlp = FeedForward(config) if not config.use_moe else MoeFeedForward(config)
+
+	def forward(
+		self,
+		hidden_states: torch.Tensor,
+		position_embeddings: tuple[torch.Tensor, torch.Tensor],
+		past_key_value: tuple[torch.Tensor, torch.Tensor] | None = None,
+		use_cache: bool = False,
+		attaention_mask: torch.Tensor | None = None,
+	) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
+		# 注意力层
+		residual = hidden_states
+		hedden_states, past_key_value = self.attn(
+			self.input_layernorm(hidden_states),
+			position_embeddings,
+			past_key_value,
+			use_cache,
+			attaention_mask,
+		)
+		hidden_states = hidden_states + residual
+
+		# 前馈网络层
+		hidden_states = hidden_states + self.mlp(hidden_states)
+
+		return hidden_states, past_key_value
