@@ -550,7 +550,7 @@ class MiniMindForCausalLM(PreTrainModel, GenerationMixin):
 		use_cache: bool = False,
 		logits_to_keep: int | torch.Tensor = 1,
 		**kwargs,
-	):
+	) -> CausalLMOutputWithPast:
 		hidden_states, past_key_values, aux_loss = self.model(
 			input_ids=input_ids,
 			attention_mask=attention_mask,
