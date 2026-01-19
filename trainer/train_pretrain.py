@@ -64,12 +64,12 @@ def train_epoch(epoch, loader, iters, start_step=0, wandb=None):
 			current_lr = optimizer.param_groups[-1]['lr']
 			eta_min = spend_time / (step + 1) * iters // 60 - spend_time // 60
 			Logger(
-				f'Epoch:[{epoch + 1}/{args.epochs}]({step}/{iters}),\
-				loss: {current_loss:.4f}, \
-				logits_loss: {current_logits_loss:.4f}, \
-				aux_loss: {current_aux_loss:.4f},\
-				lr: {current_lr:.8f}, \
-				epoch_time: {eta_min:.1f}min'
+				f'Epoch:[{epoch + 1}/{args.epochs}]({step}/{iters}),'
+				f'loss: {current_loss:.4f}, '
+				f'logits_loss: {current_logits_loss:.4f}, '
+				f'aux_loss: {current_aux_loss:.4f}, '
+				f'lr: {current_lr:.8f}, '
+				f'epoch_time: {eta_min:.1f}min'
 			)
 			if wandb:
 				wandb.log(
@@ -231,8 +231,8 @@ if __name__ == '__main__':
 				train_ds, batch_sampler=batch_sampler, num_workers=args.num_workers, pin_memory=True
 			)
 			Logger(
-				f'Epoch [{epoch + 1}/{args.epochs}]: \
-				跳过前{start_step}个step，从step {start_step + 1}开始'
+				f'Epoch [{epoch + 1}/{args.epochs}]: '
+				f'跳过前{start_step}个step，从step {start_step + 1}开始'
 			)
 			train_epoch(epoch, loader, len(loader) + start_step + 1, start_step, wandb)
 		else:  # 默认从头开始
