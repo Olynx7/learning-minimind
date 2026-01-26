@@ -18,7 +18,7 @@ class LoRA(nn.Module):
 		return self.B(self.A(x))
 
 
-def apply_lora(model, rank):
+def apply_lora(model, rank=8):
 	for _, module in model.named_modules():  # type: ignore
 		if isinstance(module, nn.Linear) and module.weight.shape[0] == module.weight.shape[1]:
 			lora = LoRA(module.in_features, module.out_features, rank).to(model.device)
